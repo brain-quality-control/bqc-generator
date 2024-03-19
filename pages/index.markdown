@@ -50,7 +50,7 @@ title: Segmentations aparc.a2009s+aseg.mgz
 
 
 #zoomedGif:hover, #slideshowImage:hover {
-  transform: scale(1.1);
+  transform: scale(1.5);
 }
 
 
@@ -67,6 +67,10 @@ title: Segmentations aparc.a2009s+aseg.mgz
   cursor: pointer;
 }
 
+#zoomedGifContainer.fullscreen {
+  transform: scale(2);
+}
+
 #slideshowContainer {
   text-align: center;
   margin-bottom: 20px;
@@ -75,6 +79,11 @@ title: Segmentations aparc.a2009s+aseg.mgz
 #displayedGif, #slideshowImage {
   transition: transform 0.25s ease;
 }
+
+#displayedGif.fullscreen {
+  transform: scale(1.25);
+}
+
 
 #gifDropdown, #pngDropdown {
   margin-bottom: 10px;

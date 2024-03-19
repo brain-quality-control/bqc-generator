@@ -10,14 +10,32 @@ function showZoomedImage(src) {
     document.getElementById('displayedGif').alt = 'Zoomed view of ' + src;
 }
 
+function openFullScreen(elem) {
+    if (elem.requestFullscreen) {
+        elem.requestFullscreen();
+    } else if (elem.webkitRequestFullscreen) { /* Safari */
+        elem.webkitRequestFullscreen();
+    } else if (elem.msRequestFullscreen) { /* IE11 */
+        elem.msRequestFullscreen();
+    }
+}
+
+function exitFullScreenMode(document) {
+    if (document.exitFullscreen) {
+        document.exitFullscreen();
+    } else if (document.webkitExitFullscreen) { /* Safari */
+        document.webkitExitFullscreen();
+    } else if (document.msExitFullscreen) { /* IE11 */
+        document.msExitFullscreen();
+    }
+}
+
 function toggleFullScreen() {
     let elem = document.getElementById('zoomedGifContainer');
     if (!document.fullscreenElement) {
-        elem.requestFullscreen().catch(err => {
-            alert(`Error attempting to enable full-screen mode: ${err.message}`);
-        });
+        openFullScreen(elem);
     } else {
-        document.exitFullscreen();
+        exitFullScreenMode(document);
     }
 }
 
@@ -44,6 +62,15 @@ function changeGIF(gifIndex) {
         updateIndexText();
     }
 }
+
+document.addEventListener('fullscreenchange', () => {
+    let gif = document.getElementById('displayedGif');
+    if (!document.fullscreenElement) {
+        gif.classList.remove('fullscreen');
+    } else {
+        gif.classList.add('fullscreen');
+    }
+});
 
 document.addEventListener('DOMContentLoaded', () => {
     fetch('static/gifs.json')
@@ -72,12 +99,15 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
     document.addEventListener('keydown', (event) => {
+        console.log('Key pressed: ', event.key);
         if (event.key === 'ArrowLeft') {
             currentSlideIndex = (currentSlideIndex - 1 + imageData.png.length) % imageData.png.length;
             displaySlide(currentSlideIndex);
         } else if (event.key === 'ArrowRight') {
             currentSlideIndex = (currentSlideIndex + 1) % imageData.png.length;
             displaySlide(currentSlideIndex);
+        } else if (event.key === 'Escape') {
+            toggleFullScreen();
         }
     }
 
@@ -122,6 +152,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             var chartElement = elements[0];
                             var gif = chart.data.datasets[chartElement.datasetIndex].data[chartElement.index].gif;
                             changeGIF(jsonData.findIndex(item => item.gif === gif));
+                            document.getElementById('gifDropdown').value = jsonData.findIndex(item => item.gif === gif);
                         }
                     },
                     plugins: {
