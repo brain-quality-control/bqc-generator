@@ -2,6 +2,7 @@ var currentSlideIndex = 0;
 var imageData;
 var jsonData;
 var entropyData;
+var chartEntropy;
 
 // Chart.register(zoomPlugin);
 
@@ -72,14 +73,18 @@ document.addEventListener('fullscreenchange', () => {
     }
 });
 
+function extractSubjectFromGifPath(gifPath) {
+    return gifPath.split('/').pop().split('.').slice(0, -1).join('.');
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     fetch('static/gifs.json')
         .then(response => response.json())
         .then(data => {
             // Sort the data based on the gif property
             data.sort((a, b) => {
-                const aBasename = a.gif.split('/').pop().split('.').slice(0, -1).join('.');
-                const bBasename = b.gif.split('/').pop().split('.').slice(0, -1).join('.');
+                const aBasename = extractSubjectFromGifPath(a.gif);
+                const bBasename = extractSubjectFromGifPath(b.gif);
                 return aBasename.localeCompare(bBasename);
             });
 
@@ -90,7 +95,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const basename = item["gif"].split('/').pop();
                 const option = document.createElement('option');
                 option.value = index;
-                option.text = basename.split('.').slice(0, -1).join('.');
+                option.text = extractSubjectFromGifPath(item["gif"]);
+                // option.text = basename.split('.').slice(0, -1).join('.');
                 gifDropdown.appendChild(option);
             });
             if (data.length > 0) {
@@ -110,8 +116,15 @@ document.addEventListener('DOMContentLoaded', () => {
             toggleFullScreen();
         }
     }
-
     );
+
+    var chartElem = document.getElementById('gifChart');
+    chartElem.addEventListener('dblclick', () => {
+        console.log('Resetting zoom');
+        console.log(chartElem);
+        chartEntropy.resetZoom();
+    });
+
 
     fetch('static/entropy.json')
         .then(response => response.json())
@@ -157,7 +170,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     },
                     plugins: {
                         zoom: {
+                            pan: {
+                                enabled: true,
+                                mode: 'x',
+                                modifierKey: ['ctrl']
+                            },
                             zoom: {
+                                drag: {
+                                    enabled: true,
+                                },
                                 wheel: {
                                     enabled: true,
                                 },
@@ -165,11 +186,38 @@ document.addEventListener('DOMContentLoaded', () => {
                                     enabled: true
                                 },
                                 mode: 'x',
+                                onZoomComplete: function (chart) {
+                                    const start = chart.chart.scales.x._startValue // This is first visible value
+                                    const end = start + chart.chart.scales.x._valueRange // This is the last visible value
+                                    const points = chart.chart.config.data.datasets[0].data.slice(start, end + 1)
+                                    // Update x-axis ticks with the visible subjects
+                                    chart.chart.options.scales.x.ticks.callback = function (value, index, values) {
+                                        return points[index] ? extractSubjectFromGifPath(points[index].gif) : '';
+                                    };
+                                    chart.chart.update();
+                                }
                             }
-                        }
-                    }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function (tooltipItem, data) {
+                                    subject = tooltipItem.raw.gif;
+                                    return extractSubjectFromGifPath(subject);
+                                },
+                            }
+                        },
+                    },
+                    onAfterUpdate: function (chart) {
+                        console.log('Updating chart');
+                        chart.options.scales.x.ticks.callback = function (value, index, values) {
+                            console.log(value, index, values);
+                            return entropyData.subjects[index];
+                        };
+                    },
                 }
             }
             );
+            chartEntropy = chart;
         });
 });
+
