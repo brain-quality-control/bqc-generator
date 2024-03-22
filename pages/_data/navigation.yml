@@ -1,0 +1,10 @@
+# main links
+main:
+  - title: "Home"
+    url: /
+  - title: "Segmentations"
+    url: /segmentations
+  - title: "Statistics"
+    url: /statistics
+  - title: "LivingPark"
+    url: https://github.com/LivingPark-MRI

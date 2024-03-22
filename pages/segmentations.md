@@ -1,14 +1,11 @@
 ---
-layout: home
-title: Segmentations aparc.a2009s+aseg.mgz
+layout: single
+classes: wide
+title: Segmentations
+permalink: /segmentations
 ---
 
-<head>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom"></script>
-  <script type="text/javascript" src="assets/js/entropy.js"></script>>
-</head>
+# aseg.a2009+aparc segmentations
 
 <div id="gifContainer">
     <select id="gifDropdown" onchange="changeGIF(this.value)">
@@ -29,11 +26,13 @@ title: Segmentations aparc.a2009s+aseg.mgz
 <br>
 <div id="gifChartContainer">
   <p>Subjects by entropy</p>
-  <canvas id="gifChart"></canvas>
+  <div id="gifChart"><div>
 </div>
 
-
-
+<!-- <br>
+<div id="plotlyFrame">
+<iframe src="volume_sig.html" style="width:100%; height:500px;"></iframe>
+<div> -->
 
 <style>
 #gifList li {
@@ -50,7 +49,7 @@ title: Segmentations aparc.a2009s+aseg.mgz
 
 
 #zoomedGif:hover, #slideshowImage:hover {
-  transform: scale(1.5);
+  transform: scale(1.25);
 }
 
 
@@ -68,7 +67,7 @@ title: Segmentations aparc.a2009s+aseg.mgz
 }
 
 #zoomedGifContainer.fullscreen {
-  transform: scale(2);
+  transform: scale(1.5);
 }
 
 #slideshowContainer {
