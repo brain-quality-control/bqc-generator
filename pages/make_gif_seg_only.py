@@ -13,10 +13,10 @@ import tqdm
 from nilearn.plotting.displays import MosaicSlicer
 
 rootdir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-input_json = os.path.realpath(os.path.join(rootdir, "../../json/json_data.json"))
-a2009s_LUT = os.path.realpath(os.path.join(rootdir, "../../config/a2009s_LUT.txt"))
-output_dir_default = os.path.realpath(os.path.join(rootdir, ".."))
-input_dir = os.path.realpath(os.path.join(rootdir, "../../../vip_outputs/"))
+input_json = os.path.realpath(os.path.join(rootdir, "json/json_data.json"))
+a2009s_LUT = os.path.realpath(os.path.join(rootdir, "config/FreeSurferColorLUT.txt"))
+output_dir_default = os.path.realpath(os.path.join(rootdir, "pages/static/gifs"))
+input_dir = os.path.realpath(os.path.join(rootdir, "data"))
 
 
 def natural_sort_key(s, regexp=r"(\d+)"):
@@ -24,9 +24,7 @@ def natural_sort_key(s, regexp=r"(\d+)"):
     Generate a key for natural sorting. It splits the input string into a list
     of strings and integers, which is suitable for correct numeric sorting.
     """
-    return [
-        int(text) if text.isdigit() else text.lower() for text in re.split(regexp, s)
-    ]
+    return [int(text) if text.isdigit() else text.lower() for text in re.split(regexp, s)]
 
 
 def get_colormap(filename):
@@ -51,17 +49,13 @@ def get_slice(img, axis, coord, colors):
         data = img[:, :, coord]
 
     shape = (data.shape[0], data.shape[1], 3)
-    return np.asanyarray([colors[val] for val in data.ravel()], dtype=np.uint8).reshape(
-        shape
-    )
+    return np.asanyarray([colors[val] for val in data.ravel()], dtype=np.uint8).reshape(shape)
 
 
 def generate_frame_plotly(image, subject, index, coord, colorscale, output_dir):
     data = nibabel.load(image).get_fdata().astype(np.uint16)
 
-    _slices = [
-        get_slice(data, axis, c, colorscale) for axis in coord for c in coord[axis]
-    ]
+    _slices = [get_slice(data, axis, c, colorscale) for axis in coord for c in coord[axis]]
 
     fig = px.imshow(
         np.stack(_slices),
@@ -110,9 +104,7 @@ def generate_frame_plotly(image, subject, index, coord, colorscale, output_dir):
         title=subject + f" - Repetition {index}",
     )
 
-    output = os.path.join(
-        output_dir, "gif", "png", subject, f"aparc.a2009s+aseg_{index}.png"
-    )
+    output = os.path.join(output_dir, "gif", "png", subject, f"aparc.DKTatlas+aseg_{index}.png")
     print(f"Writing image to {output}")
     fig.write_image(output)
 
@@ -128,11 +120,12 @@ def get_coords(image):
 
 
 def get_repetition(segmentation):
-    return int(re.search(r"rep(\d+)", segmentation).group(1))
+    # return int(re.search(r"rep(\d+)", segmentation).group(1))
+    return 0
 
 
 def generate_frames(input_dir, output_dir, subject, colormap_file, n_jobs):
-    regexp = os.path.join(input_dir, "rep*/", subject, "mri/aparc.a2009s+aseg.mgz")
+    regexp = os.path.join(input_dir, subject, "mri/aparc.DKTatlas+aseg.mgz")
     segmentations = glob.glob(regexp)
 
     if len(segmentations) == 0:
@@ -150,15 +143,14 @@ def generate_frames(input_dir, output_dir, subject, colormap_file, n_jobs):
 
 def make_gif(directory, input, output, duration, n_jobs):
     regex = os.path.join(directory, input)
-    filenames = sorted(
-        glob.glob(regex), key=lambda s: natural_sort_key(s, regexp=r"_(\d+).png")
-    )
+    filenames = sorted(glob.glob(regex), key=lambda s: natural_sort_key(s, regexp=r"_(\d+).png"))
     output_gif = f"{output}.gif" if not output.endswith(".gif") else output
     images = [imageio.v3.imread(f) for f in filenames]
     imageio.v3.imwrite(output_gif, images, duration=duration, loop=0)
 
 
 def generate_gif(subject, input_dir, output_dir, colormap_file, n_jobs, duration=0.1):
+    print(f"Generating gif for {subject}")
     if not generate_frames(input_dir, output_dir, subject, colormap_file, n_jobs):
         return
     input_dir = os.path.join(output_dir, "gif", "png", subject)
@@ -169,19 +161,11 @@ def generate_gif(subject, input_dir, output_dir, colormap_file, n_jobs, duration
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", default=input_json, type=str, help="Input json file")
-    parser.add_argument(
-        "--input-dir", default=input_dir, type=str, help="Input directory"
-    )
-    parser.add_argument(
-        "--colormap", default=a2009s_LUT, type=str, help="Colormap file"
-    )
-    parser.add_argument(
-        "--output-dir", default=output_dir_default, type=str, help="Output directory"
-    )
+    parser.add_argument("--input-dir", default=input_dir, type=str, help="Input directory")
+    parser.add_argument("--colormap", default=a2009s_LUT, type=str, help="Colormap file")
+    parser.add_argument("--output-dir", default=output_dir_default, type=str, help="Output directory")
     parser.add_argument("--duration", default=0.1, type=float, help="GIF duration")
-    parser.add_argument(
-        "--n-jobs", default=40, type=int, help="Number of jobs to run in parallel"
-    )
+    parser.add_argument("--n-jobs", default=40, type=int, help="Number of jobs to run in parallel")
 
     return parser.parse_args()
 
@@ -205,27 +189,14 @@ def main():
     with open(args.input, "r") as f:
         dataset = json.load(f)
 
-    # subject = list(dataset["PATNO_id"].values())[0]
-    # print(f"Generating GIF for {subject}")
-    # generate_gif(
-    #     subject,
-    #     args.input_dir,
-    #     args.output_dir,
-    #     args.colormap,
-    #     args.n_jobs,
-    # )
-
-    with joblib.Parallel(n_jobs=args.n_jobs, verbose=0) as parallel:
-        parallel(
-            joblib.delayed(generate_gif)(
-                subject,
-                args.input_dir,
-                args.output_dir,
-                args.colormap,
-                args.n_jobs,
-                args.duration,
-            )
-            for subject in tqdm.tqdm(dataset["PATNO_id"].values())
+    for subject in dataset.values():
+        generate_gif(
+            subject,
+            args.input_dir,
+            args.output_dir,
+            args.colormap,
+            args.n_jobs,
+            args.duration,
         )
 
 
