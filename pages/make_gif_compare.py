@@ -6,17 +6,18 @@ import re
 
 import imageio
 import joblib
-import nibabel
+import nibabel as nib
 import numpy as np
 import plotly.express as px
 import tqdm
 from nilearn.plotting.displays import MosaicSlicer
+import numpy as np
 
 rootdir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-input_json = os.path.realpath(os.path.join(rootdir, "../../json/json_data.json"))
-a2009s_LUT = os.path.realpath(os.path.join(rootdir, "../../config/a2009s_LUT.txt"))
-output_dir_default = os.path.realpath(os.path.join(rootdir, ".."))
-input_dir = os.path.realpath(os.path.join(rootdir, "../../../vip_outputs/"))
+input_json = os.path.realpath(os.path.join(rootdir, "json/json_data.json"))
+freesurfer_LUT = os.path.realpath(os.path.join(rootdir, "config/FreeSurferColorLUT.txt"))
+output_dir_default = os.path.realpath(os.path.join(rootdir, "pages/static/gifs"))
+input_dir = os.path.realpath(os.path.join(rootdir, "data"))
 
 
 def natural_sort_key(s, regexp=r"(\d+)"):
@@ -24,9 +25,7 @@ def natural_sort_key(s, regexp=r"(\d+)"):
     Generate a key for natural sorting. It splits the input string into a list
     of strings and integers, which is suitable for correct numeric sorting.
     """
-    return [
-        int(text) if text.isdigit() else text.lower() for text in re.split(regexp, s)
-    ]
+    return [int(text) if text.isdigit() else text.lower() for text in re.split(regexp, s)]
 
 
 def get_colormap(filename):
@@ -40,9 +39,10 @@ def get_colormap(filename):
             colors[int(i)] = [int(r), int(g), int(b)]
     return colors
 
-
-def get_slice(img, axis, coord, colors):
+def get_slice(img, axis, coord, colors=None, is_segmentation=False):
     coord = int(coord)
+
+    # Extract the appropriate slice
     if axis == "x":
         data = img[coord, :, :]
     elif axis == "y":
@@ -50,18 +50,44 @@ def get_slice(img, axis, coord, colors):
     else:
         data = img[:, :, coord]
 
-    shape = (data.shape[0], data.shape[1], 3)
-    return np.asanyarray([colors[val] for val in data.ravel()], dtype=np.uint8).reshape(
-        shape
-    )
+    if is_segmentation:
+        # Apply color mapping for segmentation
+        shape = (data.shape[0], data.shape[1], 3)
+        return np.asanyarray([colors[val] for val in data.ravel()], dtype=np.uint8).reshape(shape)
+    else:
+        # Keep original grayscale image but convert to 3-channel grayscale
+        return np.stack([data] * 3, axis=-1).astype(np.uint8)
 
 
 def generate_frame_plotly(image, subject, index, coord, colorscale, output_dir):
-    data = nibabel.load(image).get_fdata().astype(np.uint16)
+    segmentation = nib.load(image).get_fdata().astype(np.uint16)
+    orig = nib.load(image.replace("aparc.DKTatlas+aseg.mgz", "orig.mgz")).get_fdata().astype(np.uint16)
 
-    _slices = [
-        get_slice(data, axis, c, colorscale) for axis in coord for c in coord[axis]
-    ]
+    _slices = []
+    for axis in coord:
+        for c in coord[axis]:
+            seg_slice = get_slice(segmentation, axis, c, colorscale, is_segmentation=True)
+            img_slice = get_slice(orig, axis, c, colorscale)
+
+            # Ensure img_slice is RGB
+            if img_slice.ndim == 2:
+                img_rgb = np.stack([img_slice] * 3, axis=-1)  # Convert grayscale to RGB
+            else:
+                img_rgb = img_slice
+
+            # Create an alpha channel
+            alpha_channel = (seg_slice.sum(axis=-1) > 0) * 255  # Fully opaque where segmentation exists
+            img_rgba = np.concatenate([img_rgb, np.full(img_rgb.shape[:2] + (1,), 255, dtype=np.uint8)], axis=-1)
+
+            # Blend segmentation with original grayscale image
+            combined = img_rgba.copy()
+            mask = alpha_channel > 0
+            combined[mask] = np.concatenate([seg_slice[mask], alpha_channel[mask, None]], axis=-1)
+
+            _slices.append(combined)
+
+    # Convert to NumPy array
+    _slices = np.array(_slices)
 
     fig = px.imshow(
         np.stack(_slices),
@@ -71,55 +97,27 @@ def generate_frame_plotly(image, subject, index, coord, colorscale, output_dir):
         facet_row_spacing=0,
     )
 
-    # Remove the x and y tick labels
-    for i in range(1, 4):
-        for j in range(1, 4):
-            fig.update_xaxes(
-                showticklabels=False,
-                row=i,
-                col=j,
-                zerolinecolor="black",
-                dividercolor="black",
-                color="black",
-                showline=False,
-                linecolor="black",
-                gridcolor="black",
-            )
-            fig.update_yaxes(
-                showticklabels=False,
-                row=i,
-                col=j,
-                zerolinecolor="black",
-                dividercolor="black",
-                color="black",
-                showline=False,
-                linecolor="black",
-                gridcolor="black",
-            )
-
-    # Remove layout annotations text
     fig.layout.annotations = ()
-
-    # Set the background color to black
     fig.update_layout(
         autosize=False,
         width=1000,
         height=1000,
         plot_bgcolor="black",
         paper_bgcolor="black",
-        title=subject + f" - Repetition {index}",
+        title=f"{subject} - Repetition {index}",
     )
 
-    output = os.path.join(
-        output_dir, "gif", "png", subject, f"aparc.a2009s+aseg_{index}.png"
-    )
-    print(f"Writing image to {output}")
+    # Remove x and y ticks
+    fig.update_xaxes(showticklabels=False, showgrid=False, zeroline=False)
+    fig.update_yaxes(showticklabels=False, showgrid=False, zeroline=False)
+
+    output = os.path.join(output_dir, "gif", "png", subject, f"aparc.DKTatlas+aseg_{index}.png")
     fig.write_image(output)
 
 
 def get_coords(image):
-    img = nibabel.Nifti1Image(
-        nibabel.load(image).get_fdata(),
+    img = nib.Nifti1Image(
+        nib.load(image).get_fdata(),
         affine=np.eye(4),
         dtype=np.uint16,
     )
@@ -128,13 +126,14 @@ def get_coords(image):
 
 
 def get_repetition(segmentation):
-    return int(re.search(r"rep(\d+)", segmentation).group(1))
+    # return int(re.search(r"rep(\d+)", segmentation).group(1))
+    return 0
 
 
 def generate_frames(input_dir, output_dir, subject, colormap_file, n_jobs):
-    regexp = os.path.join(input_dir, "rep*/", subject, "mri/aparc.a2009s+aseg.mgz")
+    regexp = os.path.join(input_dir, subject, "mri/aparc.DKTatlas+aseg.mgz")
     segmentations = glob.glob(regexp)
-
+    
     if len(segmentations) == 0:
         print(f"Images for {subject} not found.")
         return False
@@ -150,15 +149,14 @@ def generate_frames(input_dir, output_dir, subject, colormap_file, n_jobs):
 
 def make_gif(directory, input, output, duration, n_jobs):
     regex = os.path.join(directory, input)
-    filenames = sorted(
-        glob.glob(regex), key=lambda s: natural_sort_key(s, regexp=r"_(\d+).png")
-    )
+    filenames = sorted(glob.glob(regex), key=lambda s: natural_sort_key(s, regexp=r"_(\d+).png"))
     output_gif = f"{output}.gif" if not output.endswith(".gif") else output
     images = [imageio.v3.imread(f) for f in filenames]
     imageio.v3.imwrite(output_gif, images, duration=duration, loop=0)
 
 
 def generate_gif(subject, input_dir, output_dir, colormap_file, n_jobs, duration=0.1):
+    print(f"Generating gif for {subject}")
     if not generate_frames(input_dir, output_dir, subject, colormap_file, n_jobs):
         return
     input_dir = os.path.join(output_dir, "gif", "png", subject)
@@ -169,19 +167,11 @@ def generate_gif(subject, input_dir, output_dir, colormap_file, n_jobs, duration
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", default=input_json, type=str, help="Input json file")
-    parser.add_argument(
-        "--input-dir", default=input_dir, type=str, help="Input directory"
-    )
-    parser.add_argument(
-        "--colormap", default=a2009s_LUT, type=str, help="Colormap file"
-    )
-    parser.add_argument(
-        "--output-dir", default=output_dir_default, type=str, help="Output directory"
-    )
+    parser.add_argument("--input-dir", default=input_dir, type=str, help="Input directory")
+    parser.add_argument("--colormap", default=freesurfer_LUT, type=str, help="Colormap file")
+    parser.add_argument("--output-dir", default=output_dir_default, type=str, help="Output directory")
     parser.add_argument("--duration", default=0.1, type=float, help="GIF duration")
-    parser.add_argument(
-        "--n-jobs", default=40, type=int, help="Number of jobs to run in parallel"
-    )
+    parser.add_argument("--n-jobs", default=40, type=int, help="Number of jobs to run in parallel")
 
     return parser.parse_args()
 
@@ -205,27 +195,14 @@ def main():
     with open(args.input, "r") as f:
         dataset = json.load(f)
 
-    # subject = list(dataset["PATNO_id"].values())[0]
-    # print(f"Generating GIF for {subject}")
-    # generate_gif(
-    #     subject,
-    #     args.input_dir,
-    #     args.output_dir,
-    #     args.colormap,
-    #     args.n_jobs,
-    # )
-
-    with joblib.Parallel(n_jobs=args.n_jobs, verbose=0) as parallel:
-        parallel(
-            joblib.delayed(generate_gif)(
-                subject,
-                args.input_dir,
-                args.output_dir,
-                args.colormap,
-                args.n_jobs,
-                args.duration,
-            )
-            for subject in tqdm.tqdm(dataset["PATNO_id"].values())
+    for subject in dataset.values():
+        generate_gif(
+            subject,
+            args.input_dir,
+            args.output_dir,
+            args.colormap,
+            args.n_jobs,
+            args.duration,
         )
 
 
