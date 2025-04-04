@@ -15,7 +15,9 @@ import numpy as np
 
 rootdir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 input_json = os.path.realpath(os.path.join(rootdir, "json/json_data.json"))
-freesurfer_LUT = os.path.realpath(os.path.join(rootdir, "config/FreeSurferColorLUT.txt"))
+freesurfer_LUT = os.path.realpath(
+    os.path.join(rootdir, "config/FreeSurferColorLUT.txt")
+)
 output_dir_default = os.path.realpath(os.path.join(rootdir, "pages/static/gifs"))
 input_dir = os.path.realpath(os.path.join(rootdir, "data"))
 
@@ -25,7 +27,9 @@ def natural_sort_key(s, regexp=r"(\d+)"):
     Generate a key for natural sorting. It splits the input string into a list
     of strings and integers, which is suitable for correct numeric sorting.
     """
-    return [int(text) if text.isdigit() else text.lower() for text in re.split(regexp, s)]
+    return [
+        int(text) if text.isdigit() else text.lower() for text in re.split(regexp, s)
+    ]
 
 
 def get_colormap(filename):
@@ -38,6 +42,7 @@ def get_colormap(filename):
             (i, name, r, g, b, a) = line.strip().split()
             colors[int(i)] = [int(r), int(g), int(b)]
     return colors
+
 
 def get_slice(img, axis, coord, colors=None, is_segmentation=False):
     coord = int(coord)
@@ -53,7 +58,9 @@ def get_slice(img, axis, coord, colors=None, is_segmentation=False):
     if is_segmentation:
         # Apply color mapping for segmentation
         shape = (data.shape[0], data.shape[1], 3)
-        return np.asanyarray([colors[val] for val in data.ravel()], dtype=np.uint8).reshape(shape)
+        return np.asanyarray(
+            [colors[val] for val in data.ravel()], dtype=np.uint8
+        ).reshape(shape)
     else:
         # Keep original grayscale image but convert to 3-channel grayscale
         return np.stack([data] * 3, axis=-1).astype(np.uint8)
@@ -61,12 +68,18 @@ def get_slice(img, axis, coord, colors=None, is_segmentation=False):
 
 def generate_frame_plotly(image, subject, index, coord, colorscale, output_dir):
     segmentation = nib.load(image).get_fdata().astype(np.uint16)
-    orig = nib.load(image.replace("aparc.DKTatlas+aseg.mgz", "orig.mgz")).get_fdata().astype(np.uint16)
+    orig = (
+        nib.load(image.replace("aparc.DKTatlas+aseg.mgz", "orig.mgz"))
+        .get_fdata()
+        .astype(np.uint16)
+    )
 
     _slices = []
     for axis in coord:
         for c in coord[axis]:
-            seg_slice = get_slice(segmentation, axis, c, colorscale, is_segmentation=True)
+            seg_slice = get_slice(
+                segmentation, axis, c, colorscale, is_segmentation=True
+            )
             img_slice = get_slice(orig, axis, c, colorscale)
 
             # Ensure img_slice is RGB
@@ -76,13 +89,20 @@ def generate_frame_plotly(image, subject, index, coord, colorscale, output_dir):
                 img_rgb = img_slice
 
             # Create an alpha channel
-            alpha_channel = (seg_slice.sum(axis=-1) > 0) * 255  # Fully opaque where segmentation exists
-            img_rgba = np.concatenate([img_rgb, np.full(img_rgb.shape[:2] + (1,), 255, dtype=np.uint8)], axis=-1)
+            alpha_channel = (
+                seg_slice.sum(axis=-1) > 0
+            ) * 255  # Fully opaque where segmentation exists
+            img_rgba = np.concatenate(
+                [img_rgb, np.full(img_rgb.shape[:2] + (1,), 255, dtype=np.uint8)],
+                axis=-1,
+            )
 
             # Blend segmentation with original grayscale image
             combined = img_rgba.copy()
             mask = alpha_channel > 0
-            combined[mask] = np.concatenate([seg_slice[mask], alpha_channel[mask, None]], axis=-1)
+            combined[mask] = np.concatenate(
+                [seg_slice[mask], alpha_channel[mask, None]], axis=-1
+            )
 
             _slices.append(combined)
 
@@ -111,7 +131,9 @@ def generate_frame_plotly(image, subject, index, coord, colorscale, output_dir):
     fig.update_xaxes(showticklabels=False, showgrid=False, zeroline=False)
     fig.update_yaxes(showticklabels=False, showgrid=False, zeroline=False)
 
-    output = os.path.join(output_dir, "gif", "png", subject, f"aparc.DKTatlas+aseg_{index}.png")
+    output = os.path.join(
+        output_dir, "gif", "png", subject, f"aparc.DKTatlas+aseg_{index}.png"
+    )
     fig.write_image(output)
 
 
@@ -133,7 +155,7 @@ def get_repetition(segmentation):
 def generate_frames(input_dir, output_dir, subject, colormap_file, n_jobs):
     regexp = os.path.join(input_dir, subject, "mri/aparc.DKTatlas+aseg.mgz")
     segmentations = glob.glob(regexp)
-    
+
     if len(segmentations) == 0:
         print(f"Images for {subject} not found.")
         return False
@@ -149,7 +171,9 @@ def generate_frames(input_dir, output_dir, subject, colormap_file, n_jobs):
 
 def make_gif(directory, input, output, duration, n_jobs):
     regex = os.path.join(directory, input)
-    filenames = sorted(glob.glob(regex), key=lambda s: natural_sort_key(s, regexp=r"_(\d+).png"))
+    filenames = sorted(
+        glob.glob(regex), key=lambda s: natural_sort_key(s, regexp=r"_(\d+).png")
+    )
     output_gif = f"{output}.gif" if not output.endswith(".gif") else output
     images = [imageio.v3.imread(f) for f in filenames]
     imageio.v3.imwrite(output_gif, images, duration=duration, loop=0)
@@ -167,11 +191,19 @@ def generate_gif(subject, input_dir, output_dir, colormap_file, n_jobs, duration
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", default=input_json, type=str, help="Input json file")
-    parser.add_argument("--input-dir", default=input_dir, type=str, help="Input directory")
-    parser.add_argument("--colormap", default=freesurfer_LUT, type=str, help="Colormap file")
-    parser.add_argument("--output-dir", default=output_dir_default, type=str, help="Output directory")
+    parser.add_argument(
+        "--input-dir", default=input_dir, type=str, help="Input directory"
+    )
+    parser.add_argument(
+        "--colormap", default=freesurfer_LUT, type=str, help="Colormap file"
+    )
+    parser.add_argument(
+        "--output-dir", default=output_dir_default, type=str, help="Output directory"
+    )
     parser.add_argument("--duration", default=0.1, type=float, help="GIF duration")
-    parser.add_argument("--n-jobs", default=40, type=int, help="Number of jobs to run in parallel")
+    parser.add_argument(
+        "--n-jobs", default=40, type=int, help="Number of jobs to run in parallel"
+    )
 
     return parser.parse_args()
 
