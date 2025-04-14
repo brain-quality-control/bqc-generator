@@ -1,0 +1,8 @@
+numpy
+imageio
+joblib
+nibabel
+plotly
+tqdm
+nilearn
+matplotlib

@@ -132,12 +132,15 @@ def get_repetition(segmentation):
 
 
 def generate_frames(input_dir, output_dir, subject, colormap_file, n_jobs):
-    regexp = os.path.join(input_dir, "rep*/", subject, "mri/aparc.a2009s+aseg.mgz")
+    regexp = os.path.join(input_dir, "rep*", subject, "mri", "aparc.a2009s+aseg.mgz")
     segmentations = glob.glob(regexp)
 
     if len(segmentations) == 0:
         print(f"Images for {subject} not found.")
         return False
+    else:
+        print(f"Found {len(segmentations)} images for {subject}")
+
     os.makedirs(os.path.join(output_dir, "gif", "png", subject), exist_ok=True)
     coord = get_coords(segmentations[0])
     colors = get_colormap(colormap_file)
@@ -180,7 +183,7 @@ def parse_args():
     )
     parser.add_argument("--duration", default=0.1, type=float, help="GIF duration")
     parser.add_argument(
-        "--n-jobs", default=40, type=int, help="Number of jobs to run in parallel"
+        "--n-jobs", default=-1, type=int, help="Number of jobs to run in parallel"
     )
 
     return parser.parse_args()
@@ -204,16 +207,6 @@ def main():
 
     with open(args.input, "r") as f:
         dataset = json.load(f)
-
-    # subject = list(dataset["PATNO_id"].values())[0]
-    # print(f"Generating GIF for {subject}")
-    # generate_gif(
-    #     subject,
-    #     args.input_dir,
-    #     args.output_dir,
-    #     args.colormap,
-    #     args.n_jobs,
-    # )
 
     with joblib.Parallel(n_jobs=args.n_jobs, verbose=0) as parallel:
         parallel(
