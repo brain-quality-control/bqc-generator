@@ -1,5 +1,15 @@
 # livingpark-entropy
 
+## Input dir structure
+
+The input directory should contain the segmentation files organized in a way that each file path includes at least one occurrence of the string `rep<repetition>`, where `<repetition>` is a unique identifier for each repetition. This repetition identifier is extracted from the file path and used to generate the corresponding GIF. For example, a valid file path might look like:
+
+```
+/data/subject1/rep1/segmentation.nii.gz
+```
+
+Here, `rep1` is the repetition identifier. The script will search for such patterns in the directory structure to process and generate GIFs for each repetition.
+
 ## Running
 
 This section details how to vizualize segmentations that were processed using the Freesurfer pipeline.
@@ -21,11 +31,13 @@ Create a json file that defines the dataset to load up following this format:
 
 ### Step 2: Generate PNG
 
-Run `python make_gif_seg_only.py --input-dir <data dir> --input <json_data>` if you only want to vizualize the segmentations or `python make_gif_compare.py --input-dir <data dir> --input <json_data>` if you want to superimpose the segmentation over the original MRI.
+Run `python3 scripts/make_gifs.py --input-dir <data dir> --input <json_data>` to generate GIFs and PNGs.
 
 ### Step 3: Start Jekyll
 
-Run `python make_gifs_json.py` to create a reference JSON that points to the appropriate PNG for the static website.
+#### Generate referencement
+
+Run `python3 scripts/make_gifs_json.py` to create a reference JSON that points to the appropriate PNG for the static website.
 
 Run `bundle exec jekyll serve`
 
