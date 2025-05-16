@@ -71,9 +71,7 @@ document.addEventListener('DOMContentLoaded', () => {
 		.then(data => {
 			// Sort the data based on the gif property
 			data.sort((a, b) => {
-				const aBasename = extractSubjectFromGifPath(a.gif);
-				const bBasename = extractSubjectFromGifPath(b.gif);
-				return aBasename.localeCompare(bBasename);
+				return a.name.localeCompare(b.name);
 			});
 			jsonData = data;
 			if (onStatisticsPage()) {

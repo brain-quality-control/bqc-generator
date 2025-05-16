@@ -12,6 +12,9 @@ permalink: /segmentations
       <!-- GIF options will be populated here -->
     </select>
     <br>
+    <div id="pathDebug" style="color: green; margin: 10px 0; font-size: 0.8em; display: none;">
+      Current path configuration: <span id="pathConfig">Loading...</span>
+    </div>
     <div id="zoomedGifContainer" onclick="toggleFullScreen()">
       <img id="displayedGif" src="" alt="Zoomed GIF" style="max-width: 100%; max-height: 100%;">
     </div>    
@@ -92,4 +95,43 @@ permalink: /segmentations
   font-size: 1.2em;
   margin-bottom: 10px;
 }
+
+/* Adding debug button styles */
+#debugToggle {
+  padding: 5px 10px;
+  background-color: #f0f0f0;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+  cursor: pointer;
+  margin-left: 10px;
+  font-size: 0.8em;
+}
+
+#debugToggle:hover {
+  background-color: #e0e0e0;
+}
 </style>
+
+<script>
+// Append a debug button to toggle path debugging information
+document.addEventListener('DOMContentLoaded', function() {
+  const container = document.getElementById('gifContainer');
+  const debugBtn = document.createElement('button');
+  debugBtn.id = 'debugToggle';
+  debugBtn.innerText = 'Debug Paths';
+  debugBtn.onclick = function() {
+    const pathDebug = document.getElementById('pathDebug');
+    pathDebug.style.display = pathDebug.style.display === 'none' ? 'block' : 'none';
+    
+    if (pathDebug.style.display === 'block') {
+      // Update the path configuration display
+      document.getElementById('pathConfig').innerText = 
+        `Base: ${CONFIG.baseDir}, GIFs: ${CONFIG.gifsDir}, PNGs: ${CONFIG.pngsDir}`;
+    }
+  };
+  
+  // Insert after the dropdown
+  const dropdown = document.getElementById('gifDropdown');
+  dropdown.parentNode.insertBefore(debugBtn, dropdown.nextSibling);
+});
+</script>
