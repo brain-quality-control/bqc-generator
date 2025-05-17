@@ -1,4 +1,4 @@
-# livingpark-entropy
+# Brain Quality Control Generator
 
 ## Input dir structure
 
