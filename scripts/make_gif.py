@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Script to generate transparent overlay visualizations and GIFs from neuroimaging data.
+Optimized with Dask for distributed task parallelism.
 """
 
 import argparse
@@ -16,14 +17,17 @@ from functools import wraps
 from contextlib import contextmanager
 
 import imageio.v3 as imageio
-import joblib
 import nibabel as nib
 import numpy as np
 import plotly.express as px
 import colorlog
-
-# Remove dependency on nilearn.plotting.displays
+from scandir_rs import Walk
 from tqdm import tqdm
+
+# Dask imports for distributed computing
+import dask
+from dask.distributed import Client, LocalCluster, progress
+import pandas as pd
 
 _visu_generator_test = False  # Flag for test mode
 _visu_generator_debug = False
@@ -49,35 +53,24 @@ logger = logging.getLogger("neuroimaging_visualizer")
 def setup_logging(debug_mode: bool) -> None:
     """
     Set up logging configuration based on debug mode.
-
-    Args:
-        debug_mode: Whether to enable debug logging
     """
-    # Set up root logger to WARNING to prevent debug logs from dependencies
     logging.basicConfig(
         level=logging.WARNING,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # Configure our application logger
     log_level = logging.DEBUG if debug_mode else logging.INFO
     logger.setLevel(log_level)
 
-    # Create console handler with formatting
     console_handler = logging.StreamHandler()
     console_handler.setLevel(log_level)
     colorformatter = colorlog.ColoredFormatter(
         "%(name)s| %(log_color)s%(levelname)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-
     console_handler.setFormatter(colorformatter)
-
-    # Add handler to our logger
     logger.addHandler(console_handler)
-
-    # Remove propagation to root logger to avoid duplicate logs
     logger.propagate = False
 
     logger.debug("Debug mode enabled")
@@ -87,18 +80,12 @@ def setup_logging(debug_mode: bool) -> None:
 def timer(operation_name: str, debug_only: bool = True) -> None:
     """
     Context manager for timing operations.
-
-    Args:
-        operation_name: Name of the operation being timed
-        debug_only: Whether to log only in debug mode
     """
     start_time = time.time()
     try:
         yield
     finally:
-        end_time = time.time()
-        elapsed = end_time - start_time
-
+        elapsed = time.time() - start_time
         if not debug_only or logger.level == logging.DEBUG:
             logger.info(
                 f"Operation '{operation_name}' completed in {elapsed:.4f} seconds"
@@ -108,18 +95,11 @@ def timer(operation_name: str, debug_only: bool = True) -> None:
 def timed_function(func: Callable) -> Callable:
     """
     Decorator for timing function execution.
-
-    Args:
-        func: Function to time
-
-    Returns:
-        Wrapped function with timing
     """
 
     @wraps(func)
     def wrapper(*args, **kwargs):
-        operation_name = func.__name__
-        with timer(operation_name):
+        with timer(func.__name__):
             return func(*args, **kwargs)
 
     return wrapper
@@ -128,48 +108,48 @@ def timed_function(func: Callable) -> Callable:
 def natural_sort_key(s: str, regexp: str = r"(\d+)") -> List[Union[int, str]]:
     """
     Generate a key for natural sorting of strings containing numbers.
-
-    Args:
-        s: String to generate a sort key for
-        regexp: Regular expression pattern to extract numbers
-
-    Returns:
-        List of integers and strings for sorting
     """
     return [
         int(text) if text.isdigit() else text.lower() for text in re.split(regexp, s)
     ]
 
 
+def fast_glob(dir: str, pattern: str, desc: str) -> List[str]:
+    """
+    Fast globbing function to find files matching a pattern.
+    """
+
+    logger.debug(f"Fast globbing for pattern: {pattern}")
+    scanned = []
+    for root, _, files in tqdm(
+        Walk(dir, file_include=[pattern]), desc=desc, unit="file"
+    ):
+        scanned.extend([os.path.join(dir, root, file) for file in files])
+
+    return scanned
+
+
 @timed_function
 def get_colormap(filename: str) -> ColorMap:
     """
     Parse a FreeSurfer-style color lookup table.
-
-    Args:
-        filename: Path to the color lookup table file
-
-    Returns:
-        Dictionary mapping label values to RGB colors
     """
     logger.debug(f"Loading color map from {filename}")
-    colors = {}
+    colors: ColorMap = {}
     with open(filename, "r") as f:
         for line in f:
             line = line.strip()
             if line.startswith("#") or not line:
                 continue
             parts = line.split()
-            if len(parts) >= 5:  # Ensure we have enough elements
+            if len(parts) >= 5:
                 label_id = int(parts[0])
                 r, g, b = int(parts[2]), int(parts[3]), int(parts[4])
                 colors[label_id] = [r, g, b]
-
     logger.debug(f"Loaded {len(colors)} color definitions")
     return colors
 
 
-@timed_function
 def get_slice(
     img: np.ndarray,
     axis: str,
@@ -177,23 +157,7 @@ def get_slice(
     colors: ColorMap,
     is_segmentation: bool = False,
 ) -> np.ndarray:
-    """
-    Extract a 2D slice from a 3D volume along the specified axis.
-
-    Args:
-        img: 3D volume data
-        axis: Axis to slice along ('x', 'y', or 'z')
-        coord: Coordinate to extract the slice at
-        colors: Color lookup table for segmentation data
-        is_segmentation: Whether the image is a segmentation mask
-
-    Returns:
-        RGB slice as a numpy array
-    """
     coord = int(coord)
-    logger.debug(f"Extracting slice along {axis}-axis at coordinate {coord}")
-
-    # Extract the appropriate slice
     if axis == "x":
         data = img[coord, :, :]
     elif axis == "y":
@@ -202,381 +166,204 @@ def get_slice(
         data = img[:, :, coord].T
 
     if is_segmentation:
-        # Apply color mapping for segmentation
         shape = (data.shape[0], data.shape[1], 3)
         return np.asanyarray(
-            [colors.get(int(val), [0, 0, 0]) for val in data.ravel()], dtype=np.uint8
+            [colors.get(int(val), [0, 0, 0]) for val in data.ravel()],
+            dtype=np.uint8,
         ).reshape(shape)
     else:
-        # Convert to 3-channel grayscale
         data_norm = (data - data.min()) / (data.max() - data.min() + 1e-8) * 255
         return np.stack([data_norm] * 3, axis=-1).astype(np.uint8)
 
 
-@timed_function
+def transparent_overlay_slice(
+    orig_slice: np.ndarray,
+    seg_slice: np.ndarray,
+    alpha: float = 0.3,
+) -> np.ndarray:
+    mask = seg_slice.sum(axis=-1) > 0
+    combined = orig_slice.copy()
+    combined[mask] = ((1 - alpha) * orig_slice[mask] + alpha * seg_slice[mask]).astype(
+        np.uint8
+    )
+    return combined
+
+
 def transparent_overlay(
     orig: np.ndarray,
     segmentation: np.ndarray,
-    coord: Coordinates,
+    coord: Dict[str, List[int]],
     colorscale: ColorMap,
     alpha: float = 0.3,
 ) -> List[np.ndarray]:
-    """
-    Create transparent overlays of segmentation masks on original images.
-
-    Args:
-        orig: Original image volume
-        segmentation: Segmentation mask volume
-        coord: Dictionary of slice coordinates for each axis
-        colorscale: Color mapping for segmentation labels
-        alpha: Transparency level (0-1)
-
-    Returns:
-        List of combined image slices with transparent overlays
-    """
-    logger.debug(f"Creating transparent overlays with alpha={alpha}")
-    _slices = []
-
+    slice_tasks: List[np.ndarray] = []
     for axis in coord:
         for c in coord[axis]:
-            # Get slices
             img_slice = get_slice(orig, axis, c, colorscale)
             seg_slice = get_slice(
                 segmentation, axis, c, colorscale, is_segmentation=True
             )
-
-            # Create a binary mask for the segmentation
-            mask = seg_slice.sum(axis=-1) > 0
-
-            # Create the blended image
-            combined = img_slice.copy()
-
-            # Apply the segmentation with transparency
-            combined[mask] = (
-                (1 - alpha) * img_slice[mask] + alpha * seg_slice[mask]
-            ).astype(np.uint8)
-
-            _slices.append(combined)
-
-    logger.debug(f"Created {len(_slices)} overlay slices")
-    return _slices
+            slice_tasks.append(transparent_overlay_slice(img_slice, seg_slice, alpha))
+    return slice_tasks
 
 
-@timed_function
 def get_coords(image_path: str) -> Coordinates:
-    """
-    Find optimal slice coordinates for visualization.
-
-    Args:
-        image_path: Path to the 3D volume
-
-    Returns:
-        Dictionary of coordinates for each axis
-    """
-    logger.debug(f"Finding optimal slice coordinates for {image_path}")
-
-    # Load the image data
-    with timer("load_image_data"):
-        img_data = nib.load(image_path).get_fdata().astype(np.uint16)
-
-    # Calculate center slices and some slices around them
+    img_data = nib.load(image_path).get_fdata().astype(np.uint16)
     shape = img_data.shape
-
-    # Find indices where there's actual data (non-zero values)
-    with timer("find_non_zero_indices"):
-        x_indices, y_indices, z_indices = np.where(img_data > 0)
-
-    # If no non-zero values are found, use center slices
-    if len(x_indices) == 0:
-        center_x = shape[0] // 2
-        center_y = shape[1] // 2
-        center_z = shape[2] // 2
-        logger.debug("No non-zero values found, using center slices")
+    x_idx, y_idx, z_idx = np.where(img_data > 0)
+    if len(x_idx) == 0:
+        cx, cy, cz = shape[0] // 2, shape[1] // 2, shape[2] // 2
     else:
-        # Use the middle of the data-containing region
-        center_x = (np.min(x_indices) + np.max(x_indices)) // 2
-        center_y = (np.min(y_indices) + np.max(y_indices)) // 2
-        center_z = (np.min(z_indices) + np.max(z_indices)) // 2
-        logger.debug(
-            f"Found data-containing region centers: x={center_x}, y={center_y}, z={center_z}"
-        )
+        cx = (x_idx.min() + x_idx.max()) // 2
+        cy = (y_idx.min() + y_idx.max()) // 2
+        cz = (z_idx.min() + z_idx.max()) // 2
 
-    resolution_level = 8
+    lvl = 8
+    x_cuts = [max(0, cx - shape[0] // lvl), cx, min(shape[0] - 1, cx + shape[0] // lvl)]
+    y_cuts = [max(0, cy - shape[1] // lvl), cy, min(shape[1] - 1, cy + shape[1] // lvl)]
+    z_cuts = [max(0, cz - shape[2] // lvl), cz, min(shape[2] - 1, cz + shape[2] // lvl)]
 
-    # Create some slices around the center (one before, center, one after)
-    x_cuts = [
-        max(0, center_x - shape[0] // resolution_level),
-        center_x,
-        min(shape[0] - 1, center_x + shape[0] // resolution_level),
-    ]
-    y_cuts = [
-        max(0, center_y - shape[1] // resolution_level),
-        center_y,
-        min(shape[1] - 1, center_y + shape[1] // resolution_level),
-    ]
-    z_cuts = [
-        max(0, center_z - shape[2] // resolution_level),
-        center_z,
-        min(shape[2] - 1, center_z + shape[2] // resolution_level),
-    ]
-
-    logger.debug(f"Selected coordinates - x: {x_cuts}, y: {y_cuts}, z: {z_cuts}")
-
-    # Return dictionary with coordinates for each axis
     return {"x": x_cuts, "y": y_cuts, "z": z_cuts}
 
 
 def get_repetition(filepath: str) -> int:
-    """
-    Extract repetition number from a filepath.
-
-    Args:
-        filepath: Path containing repetition information
-
-    Returns:
-        Repetition number (defaults to 0 if not found)
-    """
     if match := re.search(r"rep(\d+)", filepath):
         return int(match.group(1))
     return 0
 
 
-@timed_function
 def generate_frame(
     image_path: str,
     subject: str,
     index: int,
-    coord: Coordinates,
+    coord: Dict[str, List[int]],
     colors: ColorMap,
     output_dir: str,
     transparency: float,
     segmentation_type: str,
-) -> None:
-    """
-    Generate a single frame visualization.
-
-    Args:
-        image_path: Path to segmentation image
-        subject: Subject identifier
-        index: Repetition index
-        coord: Slice coordinates
-        colors: Color lookup table
-        output_dir: Output directory
-        transparency: Transparency level for overlay
-    """
-    logger.debug(f"Generating frame for {subject}, repetition {index}")
-
-    # Load segmentation and original images
+) -> Optional[str]:
     segmentation = nib.load(image_path).get_fdata().astype(np.uint16)
     orig_path = image_path.replace(segmentation_type, "orig.mgz")
-
     if not os.path.exists(orig_path):
-        logger.error(f"Original image not found: {orig_path}")
-        return
+        logger.warning(f"Original image not found for {subject} at {orig_path}")
+        return None
+    orig = nib.load(orig_path).get_fdata().astype(np.uint16)
 
-    logger.debug(f"Loading original image from {orig_path}")
-    with timer("load_original_image"):
-        orig = nib.load(orig_path).get_fdata().astype(np.uint16)
-
-    # Create transparent overlays
-    slices = transparent_overlay(orig, segmentation, coord, colors, alpha=transparency)
-    slices_array = np.array(slices)
-
-    # Create visualization using plotly
-    logger.debug("Creating plotly visualization")
-    with timer("plotly_visualization"):
-        fig = px.imshow(
-            slices_array,
-            facet_col=0,
-            facet_col_wrap=3,
-            facet_col_spacing=0,
-            facet_row_spacing=0,
-        )
-
-        # Configure layout
-        fig.layout.annotations = ()
-        fig.update_layout(
-            autosize=False,
-            width=1000,
-            height=1000,
-            plot_bgcolor="black",
-            paper_bgcolor="black",
-            title=f"{subject} - Repetition {index}",
-        )
-
-        # Remove axes
-        fig.update_xaxes(showticklabels=False, showgrid=False, zeroline=False)
-        fig.update_yaxes(showticklabels=False, showgrid=False, zeroline=False)
-
-    # Save image
-    output_path = os.path.join(
-        output_dir, "gif", "png", subject, f"aparc.DKTatlas+aseg_{index}.png"
+    slices_list = transparent_overlay(
+        orig, segmentation, coord, colors, alpha=transparency
     )
-    logger.debug(f"Saving frame to {output_path}")
+    slices_array = np.array(slices_list)
+
+    fig = px.imshow(
+        slices_array,
+        facet_col=0,
+        facet_col_wrap=3,
+        facet_col_spacing=0,
+        facet_row_spacing=0,
+    )
+    fig.layout.annotations = ()
+    fig.update_layout(
+        autosize=False,
+        width=1000,
+        height=1000,
+        plot_bgcolor="black",
+        paper_bgcolor="black",
+        title=f"{subject} - Repetition {index}",
+    )
+    fig.update_xaxes(showticklabels=False, showgrid=False, zeroline=False)
+    fig.update_yaxes(showticklabels=False, showgrid=False, zeroline=False)
+
+    output_path = os.path.join(
+        output_dir, "gif", "png", subject, f"{segmentation_type}_{index}.png"
+    )
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with timer("save_image"):
-        fig.write_image(output_path)
+    fig.write_image(output_path)
+    return output_path
 
 
-@timed_function
+def find_segmentations(
+    input_dir: str, subject: str, segmentation_type: str
+) -> List[Tuple[int, str]]:
+    pattern = os.path.join(input_dir, "**", subject, "mri", segmentation_type)
+    segs = glob.glob(pattern, recursive=True)
+    return [(get_repetition(s), s) for s in segs]
+
+
 def generate_frames(
     input_dir: str,
     output_dir: str,
     subject: str,
     colormap_file: str,
-    n_jobs: int,
     transparency: float,
     segmentation_type: str,
-) -> bool:
-    """
-    Generate frames for all repetitions of a subject.
-
-    Args:
-        input_dir: Input directory
-        output_dir: Output directory
-        subject: Subject identifier
-        colormap_file: Path to color lookup table
-        n_jobs: Number of parallel jobs
-        transparency: Transparency level
-
-    Returns:
-        True if frames were generated, False otherwise
-    """
-    logger.info(f"Generating frames for subject {subject}")
-
-    # Find all segmentation files for the subject
-    pattern = os.path.join(input_dir, "**", subject, "mri/aparc.DKTatlas+aseg.mgz")
-    segmentations = glob.glob(pattern)
-
+) -> List[str]:
+    segmentations = find_segmentations(input_dir, subject, segmentation_type)
     if not segmentations:
-        logger.warning(f"Images for {subject} not found.")
-        return False
+        logger.warning(f"No segmentations found for {subject}. Skipping.")
+        return []
 
-    if _visu_generator_debug or _visu_generator_test:
-        # Limit to 2 segmentations for testing/debugging
-        segmentations = segmentations[:1]
-        logger.debug(f"Debug/Test mode: limiting to {len(segmentations)} segmentations")
-
-    logger.debug(f"Found {len(segmentations)} segmentation files for {subject}")
-
-    # Create output directory
     os.makedirs(os.path.join(output_dir, "gif", "png", subject), exist_ok=True)
-
-    # Get slice coordinates and color lookup table
-    coord = get_coords(segmentations[0])
     colors = get_colormap(colormap_file)
 
-    # Generate frames for each repetition
-    segmentations = [(get_repetition(s), s) for s in segmentations]
-    logger.debug(f"Processing {len(segmentations)} repetitions")
+    first_seg = segmentations[0][1]
+    coord = get_coords(first_seg)
 
-    for i, segmentation in segmentations:
-        with timer(f"generate_frame_{subject}_rep{i}", debug_only=False):
-            generate_frame(
-                segmentation,
-                subject,
-                i,
-                coord,
-                colors,
-                output_dir,
-                transparency,
-                segmentation_type,
-            )
+    frames: List[str] = []
+    for i, seg_path in segmentations:
+        frame = generate_frame(
+            seg_path,
+            subject,
+            i,
+            coord,
+            colors,
+            output_dir,
+            transparency,
+            segmentation_type,
+        )
+        if frame:
+            frames.append(frame)
+    return frames
 
-    return True
 
-
-@timed_function
 def make_gif(
     directory: str, input_pattern: str, output_path: str, duration: float
-) -> None:
-    """
-    Create a GIF from a sequence of images.
-
-    Args:
-        directory: Directory containing input images
-        input_pattern: Glob pattern for input images
-        output_path: Path for output GIF
-        duration: Duration between frames in seconds
-    """
-    logger.info(f"Creating GIF from {directory}/{input_pattern}")
-
-    # Find and sort input files
+) -> Optional[str]:
     pattern = os.path.join(directory, input_pattern)
     filenames = sorted(
         glob.glob(pattern), key=lambda s: natural_sort_key(s, regexp=r"_(\d+).png")
     )
-
     if not filenames:
-        logger.warning(f"No images found matching pattern: {pattern}")
-        return
+        logger.warning(f"No files found for pattern: {pattern}")
+        return None
 
-    logger.debug(f"Found {len(filenames)} images for GIF")
-
-    # Ensure output path has .gif extension
-    output_gif = (
-        f"{output_path}.gif" if not output_path.endswith(".gif") else output_path
-    )
-
-    # Create GIF
-    logger.debug(f"Creating GIF at {output_gif}")
-    with timer("load_images"):
-        images = [imageio.imread(f) for f in filenames]
-
-    with timer("write_gif"):
-        imageio.imwrite(output_gif, images, duration=duration, loop=0)
-
-    logger.info(f"GIF created successfully: {output_gif} ({len(images)} frames)")
+    gif_out = f"{output_path}.gif" if not output_path.endswith(".gif") else output_path
+    images = [imageio.imread(f) for f in filenames]
+    imageio.imwrite(gif_out, images, duration=duration, loop=0)
+    return gif_out
 
 
-@timed_function
 def generate_gif(
     subject: str,
     input_dir: str,
     output_dir: str,
     colormap_file: str,
-    n_jobs: int,
     transparency: float,
     segmentation_type: str,
     duration: float = 0.1,
-) -> None:
-    """
-    Generate a GIF for a subject.
+) -> Optional[str]:
+    frame_paths = generate_frames(
+        input_dir, output_dir, subject, colormap_file, transparency, segmentation_type
+    )
+    if not frame_paths:
+        logger.warning(f"No frames for {subject}, skipping GIF.")
+        return None
 
-    Args:
-        subject: Subject identifier
-        input_dir: Input directory
-        output_dir: Output directory
-        colormap_file: Path to color lookup table
-        n_jobs: Number of parallel jobs
-        transparency: Transparency level
-        duration: Duration between frames in seconds
-    """
-    logger.info(f"Starting GIF generation for subject {subject}")
-
-    # First generate all frames
-    if not generate_frames(
-        input_dir,
-        output_dir,
-        subject,
-        colormap_file,
-        n_jobs,
-        transparency,
-        segmentation_type,
-    ):
-        logger.warning(f"Failed to generate frames for {subject}")
-        return
-
-    # Then create GIF from frames
     input_path = os.path.join(output_dir, "gif", "png", subject)
     output_path = os.path.join(output_dir, "gif", subject)
-    make_gif(input_path, "*.png", output_path, duration)
-
-    logger.info(f"Completed GIF generation for subject {subject}")
+    return make_gif(input_path, "*.png", output_path, duration)
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse command line arguments."""
     parser = argparse.ArgumentParser(
         description="Generate transparent overlay visualizations and GIFs from neuroimaging data."
     )
@@ -636,21 +423,27 @@ def parse_args() -> argparse.Namespace:
         type=str,
         help="Path to log file (if not specified, logs to console only)",
     )
-
+    parser.add_argument(
+        "--scheduler-address",
+        type=str,
+        help="Address of existing Dask scheduler (if not specified, creates a local cluster)",
+    )
+    parser.add_argument(
+        "--memory-limit",
+        type=str,
+        default="auto",
+        help="Memory limit per worker (e.g., '4GB')",
+    )
+    parser.add_argument(
+        "--threads-per-worker",
+        type=int,
+        default=1,
+        help="Number of threads per worker (default: 1)",
+    )
     return parser.parse_args()
 
 
 def validate_args(args: argparse.Namespace) -> None:
-    """
-    Validate command line arguments.
-
-    Args:
-        args: Parsed command line arguments
-
-    Raises:
-        FileNotFoundError: If specified files don't exist
-        NotADirectoryError: If specified directories don't exist
-    """
     logger.debug("Validating command line arguments")
     if args.input and not os.path.isfile(args.input):
         raise FileNotFoundError(f"File {args.input} not found.")
@@ -658,135 +451,115 @@ def validate_args(args: argparse.Namespace) -> None:
         raise NotADirectoryError(f"Directory {args.input_dir} not found.")
     if not os.path.isfile(args.colormap):
         raise FileNotFoundError(f"File {args.colormap} not found.")
-
-    # Create output directory if it doesn't exist
     os.makedirs(args.output_dir, exist_ok=True)
     logger.debug("Arguments validated successfully")
 
 
-@timed_function
 def get_subjects(args: argparse.Namespace) -> Set[str]:
-    """
-    Get the set of subjects to process.
-
-    Args:
-        args: Parsed command line arguments
-
-    Returns:
-        Set of subject identifiers
-    """
     logger.info("Finding subjects to process")
-    subjects = set()
-
+    subjects: Set[str] = set()
     if args.input:
-        # Get subjects from JSON file
         logger.debug(f"Loading subjects from JSON file: {args.input}")
         with open(args.input, "r") as f:
             dataset = json.load(f)
-            subjects = set(dataset.values())
-            logger.debug(f"Found {len(subjects)} subjects in JSON file")
+        subjects = set(dataset.values())
     else:
-        # Scan directory for subjects
         logger.debug(f"Scanning {args.input_dir} for subjects...")
-        with timer("scan_directory", debug_only=False):
-            orig_files = glob.glob(
-                os.path.join(args.input_dir, "**", "orig.mgz"), recursive=True
-            )
-
-        logger.debug(f"Found {len(orig_files)} original image files")
-
-        # Extract subject identifiers
-        for path in tqdm(orig_files, desc="Finding subjects"):
+        orig_files = fast_glob(args.input_dir, "orig.mgz", desc="Scanning for subjects")
+        for path in orig_files:
             if match := re.search(r"sub-[^/]+", path):
                 subjects.add(match.group(0))
 
-    # Limit number of subjects in test mode
     if args.test:
         logger.info("Test mode: limiting to 2 subjects.")
-        subjects_list = list(subjects)
-        if len(subjects_list) > 2:
-            subjects = set(subjects_list[:2])
+        subjects = set(list(subjects)[:2])
 
-    logger.info(f"Found {len(subjects)} subjects to process")
-    if len(subjects) <= 5:
-        logger.info(f"Subjects: {', '.join(sorted(subjects))}")
-
+    logger.info(f"Found {len(subjects)} subjects: {sorted(subjects)[:5]}")
     return subjects
 
 
+def setup_dask_client(args: argparse.Namespace) -> Client:
+    if args.scheduler_address:
+        logger.info(f"Connecting to Dask scheduler at {args.scheduler_address}")
+        client = Client(args.scheduler_address)
+    else:
+        n_workers = (
+            os.cpu_count() if args.n_jobs <= 0 else min(args.n_jobs, os.cpu_count())
+        )
+        logger.info(f"Setting up local Dask cluster with {n_workers} workers")
+        cluster = LocalCluster(
+            n_workers=n_workers,
+            threads_per_worker=args.threads_per_worker,
+            memory_limit=args.memory_limit,
+            processes=True,
+            silence_logs=logging.WARNING,
+        )
+        client = Client(cluster)
+
+    logger.info(f"Dask dashboard available at: {client.dashboard_link}")
+    return client
+
+
 def main():
-    """Main entry point."""
     start_time = time.time()
-
-    # Parse arguments
     args = parse_args()
-
-    # Set up logging
     setup_logging(args.debug)
-
     if args.debug:
-        logger.debug("Debug mode enabled")
         global _visu_generator_debug
         _visu_generator_debug = True
-
     if args.test:
-        logger.debug("Test mode enabled")
         global _visu_generator_test
         _visu_generator_test = True
-
     if args.log_file:
-        # Add file handler if log file is specified
-        file_handler = logging.FileHandler(args.log_file)
-        file_formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
+        fh = logging.FileHandler(args.log_file)
+        fh.setFormatter(
+            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         )
-        file_handler.setFormatter(file_formatter)
-        file_handler.setLevel(logging.DEBUG if args.debug else logging.INFO)
-        logger.addHandler(file_handler)
+        fh.setLevel(logging.DEBUG if args.debug else logging.INFO)
+        logger.addHandler(fh)
 
-    logger.info("Starting neuroimaging visualization script")
-    logger.debug(f"Arguments: {vars(args)}")
-
+    logger.info("Starting Dask-optimized neuroimaging visualization script")
     try:
-        # Validate arguments
         validate_args(args)
-
-        # Find subjects to process
         subjects = get_subjects(args)
-
         if not subjects:
             logger.warning("No subjects found to process. Exiting.")
             return
 
-        # Process subjects
-        with timer("process_all_subjects", debug_only=False):
-            # Process subjects in parallel
-            with joblib.Parallel(n_jobs=args.n_jobs, verbose=10) as parallel:
-                parallel(
-                    joblib.delayed(generate_gif)(
-                        subject,
-                        args.input_dir,
-                        args.output_dir,
-                        args.colormap,
-                        args.n_jobs,
-                        args.transparency,
-                        args.segmentation,
-                        args.duration,
-                    )
-                    for subject in tqdm(subjects, desc="Processing subjects")
+        client = setup_dask_client(args)
+        with timer("process_subjects", debug_only=False):
+            # Prepare argument tuples
+            subject_args = [
+                (
+                    subject,
+                    args.input_dir,
+                    args.output_dir,
+                    args.colormap,
+                    args.transparency,
+                    args.segmentation,
+                    args.duration,
                 )
+                for subject in subjects
+            ]
 
-        # Calculate total execution time
-        end_time = time.time()
-        total_time = end_time - start_time
+            # Submit one task per subject
+            futures = [client.submit(generate_gif, *params) for params in subject_args]
 
-        logger.info(
-            f"Processing complete. Total execution time: {total_time:.2f} seconds"
-        )
+            # Track progress and gather results
+            progress(futures)
+            results = client.gather(futures)
 
-    except Exception as e:
-        logger.exception(f"Error during execution: {e}")
+            successful = sum(1 for r in results if r)
+            logger.info(
+                f"Successfully generated {successful} out of {len(subjects)} GIFs"
+            )
+
+        total_time = time.time() - start_time
+        logger.info(f"Processing complete in {total_time:.2f}s")
+        client.close()
+
+    except Exception:
+        logger.exception("Error during execution")
         raise
 
 
